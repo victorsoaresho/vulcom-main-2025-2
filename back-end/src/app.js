@@ -18,6 +18,8 @@ app.use(cors({
 }))
 
 /*********** ROTAS DA API **************/
+import auth from './middleware/auth.js'
+app.use(auth)
 
 import carsRouter from './routes/cars.js'
 app.use('/cars', carsRouter)
