@@ -4,8 +4,13 @@ import bcrypt from 'bcrypt'
 
 const controller = {}     // Objeto vazio
 
+
 controller.create = async function(req, res) {
   try {
+
+    // Somente usuários administradores podem acessar este recurso
+    // HTTP 403: Forbidden(
+    if(! req?.authUser?.is_admin) return res.status(403).end()
 
     // Verifica se existe o campo "password" em "req.body".
     // Caso positivo, geramos o hash da senha antes de enviá-la
@@ -32,12 +37,16 @@ controller.create = async function(req, res) {
 
 controller.retrieveAll = async function(req, res) {
   try {
+
+    // Somente usuários administradores podem acessar este recurso
+    // HTTP 403: Forbidden(
+    if(! req?.authUser?.is_admin) return res.status(403).end()
+      
     const result = await prisma.user.findMany(
       // Omite o campo "password" do resultado
       // por questão de segurança
       { omit: { password: true } } 
     )
-
 
     // HTTP 200: OK (implícito)
     res.send(result)
@@ -52,13 +61,20 @@ controller.retrieveAll = async function(req, res) {
 
 controller.retrieveOne = async function(req, res) {
   try {
+
+    // Somente usuários administradores ou o próprio usuário
+    // autenticado podem acessar este recurso
+    // HTTP 403: Forbidden
+    if(! (req?.authUser?.is_admin || 
+      Number(req?.authUser?.id) === Number(req.params.id))) 
+      return res.status(403).end()
+      
     const result = await prisma.user.findUnique({
       // Omite o campo "password" do resultado
       // por questão de segurança
       omit: { password: true },
       where: { id: Number(req.params.id) }
     })
-
 
     // Encontrou ~> retorna HTTP 200: OK (implícito)
     if(result) res.send(result)
@@ -73,8 +89,13 @@ controller.retrieveOne = async function(req, res) {
   }
 }
 
+
 controller.update = async function(req, res) {
   try {
+
+    // Somente usuários administradores podem acessar este recurso
+    // HTTP 403: Forbidden(
+    if(! req?.authUser?.is_admin) return res.status(403).end()
 
     // Verifica se existe o campo "password" em "req.body".
     // Caso positivo, geramos o hash da senha antes de enviá-la
@@ -103,9 +124,13 @@ controller.update = async function(req, res) {
   }
 }
 
-
 controller.delete = async function(req, res) {
   try {
+
+    // Somente usuários administradores podem acessar este recurso
+    // HTTP 403: Forbidden(
+    if(! req?.authUser?.is_admin) return res.status(403).end()
+
     await prisma.user.delete({
       where: { id: Number(req.params.id) }
     })
@@ -127,7 +152,6 @@ controller.delete = async function(req, res) {
     }
   }
 }
-
 
 controller.login = async function(req, res) {
   try {
