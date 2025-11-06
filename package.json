@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "cpf-cnpj-validator": "^1.0.3",
+    "zod": "^4.1.12"
+  }
+}
