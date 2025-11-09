@@ -7,7 +7,7 @@ import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import { DatePicker, LocalizationProvider } from '@mui/x-date-pickers'
 import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFnsV3'
-import { parseISO } from 'date-fns'
+import { parseISO, isBefore, isAfter, startOfDay } from 'date-fns' // << NOVO: Importar funções de data
 import { ptBR } from 'date-fns/locale/pt-BR'
 import React from 'react'
 import InputMask from 'react-input-mask'
@@ -16,23 +16,130 @@ import myfetch from '../../lib/myfetch'
 import useConfirmDialog from '../../ui/useConfirmDialog'
 import useNotification from '../../ui/useNotification'
 import useWaiting from '../../ui/useWaiting'
+import { z } from 'zod' // << NOVO: Importa o Zod
+
+// ===============================================
+// INÍCIO: Definição do Zod Schema no Front-end
+// ===============================================
+
+const today = startOfDay(new Date())
+const currentYear = today.getFullYear()
+const shopOpeningDate = new Date(2020, 2, 20) // 20/03/2020
+
+const colors = [
+  'AMARELO', 'AZUL', 'BRANCO', 'CINZA', 'DOURADO', 'LARANJA',
+  'MARROM', 'PRATA', 'PRETO', 'ROSA', 'ROXO', 'VERDE', 'VERMELHO',
+]
+
+const carSchema = z.object({
+  brand: z.string()
+    .min(1, { message: 'A marca deve ter pelo menos 1 caractere.' })
+    .max(25, { message: 'A marca deve ter no máximo 25 caracteres.' }),
+
+  model: z.string()
+    .min(1, { message: 'O modelo deve ter pelo menos 1 caractere.' })
+    .max(25, { message: 'O modelo deve ter no máximo 25 caracteres.' }),
+
+  color: z.enum(colors, {
+    required_error: 'A cor é obrigatória.',
+    invalid_type_error: 'A cor deve ser uma das opções válidas.',
+  }),
+
+  year_manufacture: z.coerce.number({
+    invalid_type_error: 'O ano de fabricação deve ser um número inteiro.',
+    required_error: 'O ano de fabricação é obrigatório.'
+  })
+  .int({ message: 'O ano de fabricação deve ser um número inteiro.' })
+  .min(1960, { message: 'O ano de fabricação não pode ser anterior a 1960.' })
+  .max(currentYear, { message: `O ano de fabricação não pode ser posterior a ${currentYear}.` }),
+
+  imported: z.boolean({
+    required_error: 'A informação de importado é obrigatória.',
+    invalid_type_error: 'O campo importado deve ser um valor booleano.',
+  }),
+
+  plates: z.string()
+    .length(8, { message: 'A placa deve ter exatamente 8 caracteres, no formato AAA-9A99.' }),
+
+  // Data de venda: Opcional. No front-end o DatePicker retorna null para data vazia, 
+  // mas como o backend espera que se for null ele passe no coerce/preprocess, 
+  // aqui usamos z.date().nullable() que já aceita null
+  selling_date: z.date().nullable().superRefine((val, ctx) => {
+    if (val) {
+      const valStartOfDay = startOfDay(val)
+      if (isBefore(valStartOfDay, shopOpeningDate)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'A data de venda não pode ser anterior a 20/03/2020.',
+          path: ['selling_date']
+        })
+      }
+      if (isAfter(valStartOfDay, today)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'A data de venda não pode ser posterior à data de hoje.',
+          path: ['selling_date']
+        })
+      }
+    }
+  }),
+
+  selling_price: z.coerce.number({
+    invalid_type_error: 'O preço de venda deve ser um número.',
+  })
+  .nullable().superRefine((val, ctx) => {
+    if (val !== null) {
+      if (val < 5000) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'O preço de venda deve ser no mínimo R$ 5.000,00.',
+          path: ['selling_price']
+        })
+      }
+      if (val > 5000000) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'O preço de venda deve ser no máximo R$ 5.000.000,00.',
+          path: ['selling_price']
+        })
+      }
+    }
+  }),
+
+  customer_id: z.coerce.number({
+    required_error: 'O cliente é obrigatório.',
+  })
+  .int({ message: 'O ID do cliente deve ser um número inteiro.' })
+  .min(1, { message: 'O cliente é obrigatório.' })
+  .nullable(),
+
+  // Ignorar outros campos que podem estar no objeto, mas não são parte da validação de entrada do formulário
+  created_user_id: z.number().optional(),
+  updated_user_id: z.number().optional(),
+  id: z.number().optional(),
+})
+// ===============================================
+// FIM: Definição do Zod Schema no Front-end
+// ===============================================
 
 export default function CarForm() {
   /*
     Por padrão, todos os campos do nosso formulário terão como
-    valor inicial uma string vazia. A exceção é o campo birth_date
-    que, devido ao funcionamento do componente DatePicker, deve
-    iniciar valendo null.
+    valor inicial uma string vazia. A exceção é o campo:
+    - `selling_date` que deve iniciar valendo null.
+    - `imported` que deve iniciar valendo false.
+    - `customer_id` que deve iniciar valendo '' ou null (para select).
   */
   const formDefaults = {
     brand: '',
     model: '',
     color: '',
     year_manufacture: '',
-    imported: false,
+    imported: false, // Alterado para fazer parte do objeto car
     plates: '',
     selling_date: null,
-    customer_id: ''
+    selling_price: '', // Alterado para string vazia para ser coerível a null no Zod
+    customer_id: '' // Alterado para string vazia para ser coerível a null/number no Zod
   }
 
   const [state, setState] = React.useState({
@@ -50,7 +157,7 @@ export default function CarForm() {
   const { notify, Notification } = useNotification()
   const { showWaiting, Waiting } = useWaiting()
 
-  const colors = [
+  const colorsList = [ // Renomeado para não conflitar com a constante 'colors' do Zod
     { value: 'AMARELO', label: 'AMARELO' },
     { value: 'AZUL', label: 'AZUL' },
     { value: 'BRANCO', label: 'BRANCO' },
@@ -72,59 +179,122 @@ export default function CarForm() {
     A: '[A-Z]', //  letra maiúscula de A a Z.
   }
 
-  const currentYear = new Date().getFullYear()
+  const currentYearCalculated = new Date().getFullYear() // Renomeado
   const minYear = 1960
   const years = []
-  for (let year = currentYear; year >= minYear; year--) {
+  for (let year = currentYearCalculated; year >= minYear; year--) {
     years.push(year)
   }
 
-  const [imported, setImported] = React.useState(false)
-  // car.imported = imported
-  const handleImportedChange = (event) => {
-    setImported(event.target.checked)
-  }
+  // Removido estado "imported" separado. Agora é gerenciado via handleFieldChange/handleImportedChange.
 
+  // Alterada para atualizar o objeto car e o estado formModified
   function handleFieldChange(event) {
     const carCopy = { ...car }
     carCopy[event.target.name] = event.target.value
-    setState({ ...state, car: carCopy, formModified: true })
+
+    // Limpa o erro de validação para o campo modificado
+    const errorsCopy = { ...inputErrors }
+    delete errorsCopy[event.target.name]
+
+    setState({ ...state, car: carCopy, formModified: true, inputErrors: errorsCopy })
+  }
+
+  // Função para lidar com a mudança do checkbox (boolean)
+  function handleImportedChange(event) {
+    const carCopy = { ...car }
+    carCopy.imported = event.target.checked
+
+    // Limpa o erro de validação para o campo modificado
+    const errorsCopy = { ...inputErrors }
+    delete errorsCopy.imported
+
+    setState({ ...state, car: carCopy, formModified: true, inputErrors: errorsCopy })
+  }
+
+  // Função para lidar com a mudança da data
+  function handleDateChange(value) {
+    const carCopy = { ...car }
+    carCopy.selling_date = value
+
+    // Limpa o erro de validação para o campo modificado
+    const errorsCopy = { ...inputErrors }
+    delete errorsCopy.selling_date
+    
+    setState({ ...state, car: carCopy, formModified: true, inputErrors: errorsCopy })
   }
 
   async function handleFormSubmit(event) {
     event.preventDefault(); // Evita que a página seja recarregada
     showWaiting(true); // Exibe a tela de espera
+    
+    // ===============================================
+    // NOVO: Etapa 1: Validação dos dados no Front-end
+    // ===============================================
     try {
+      // 1. Prepara os dados para validação e envio
+      const dataToValidate = {
+        ...car,
+        // O DatePicker retorna um objeto Date ou null.
+        // O TextField de preço retorna uma string (pode ser vazia).
+        // O Checkbox retorna um booleano.
+      }
+      
+      // 2. Tenta fazer o parse/validação
+      const validationResult = carSchema.safeParse(dataToValidate)
+      
+      if (!validationResult.success) {
+        // Se a validação falhar, extrai e armazena os erros
+        const errors = validationResult.error.issues.reduce((acc, issue) => {
+          // O path[0] é o nome do campo
+          if (!acc[issue.path[0]]) {
+            acc[issue.path[0]] = issue.message
+          }
+          return acc
+        }, {})
 
-      if(car.selling_price === '') car.selling_price = null
+        setState({ ...state, inputErrors: errors })
+        notify('Houve um erro de validação no formulário.', 'error')
+        showWaiting(false)
+        return // Encerra a função se a validação local falhar
+      }
 
-      // Se houver parâmetro na rota, significa que estamos modificando
-      // um cliente já existente. A requisição será enviada ao back-end
-      // usando o método PUT
-      if (params.id) await myfetch.put(`/cars/${params.id}`, car)
-      // Caso contrário, estamos criando um novo cliente, e enviaremos
-      // a requisição com o método POST
-      else await myfetch.post('/cars', car)
+      // Se a validação local passar, usa os dados "parsed" (coeridos) para o envio
+      const finalData = validationResult.data;
 
-      // Deu certo, vamos exbir a mensagem de feedback que, quando for
-      // fechada, vai nos mandar de volta para a listagem de clientes
+      // Se houver parâmetro na rota, estamos modificando (PUT)
+      if (params.id) {
+        await myfetch.put(`/cars/${params.id}`, finalData)
+      }
+      // Caso contrário, estamos criando um novo (POST)
+      else {
+        await myfetch.post('/cars', finalData)
+      }
+
+      // Deu certo, exibe a mensagem de feedback
       notify('Item salvo com sucesso.', 'success', 4000, () => {
         navigate('..', { relative: 'path', replace: true })
       })
+
     } catch (error) {
       console.error(error)
-      notify(error.message, 'error')
+      // Se for um erro de validação do back-end (HTTP 400), exibe as mensagens
+      if (error.status === 400 && error.body.errors) {
+        setState({ ...state, inputErrors: error.body.errors })
+        notify('Erro de validação: ' + error.body.message, 'error')
+      } else {
+        // Outro erro de rede ou servidor
+        notify(error.message || 'Ocorreu um erro inesperado.', 'error')
+      }
     } finally {
-      // Desliga a tela de espera, seja em caso de sucesso, seja em caso de erro
+      // Desliga a tela de espera
       showWaiting(false)
     }
   }
 
   /*
     useEffect() que é executado apenas uma vez, no carregamento do componente.
-    Verifica se a rota tem parâmetro. Caso tenha, significa que estamos vindo
-    do componente de listagem por meio do botão de editar, e precisamos chamar
-    a função loadData() para buscar no back-end os dados do cliente a ser editado
+    Busca dados de clientes e, se for edição, busca os dados do carro.
   */
   React.useEffect(() => {
     loadData()
@@ -136,22 +306,23 @@ export default function CarForm() {
 
       let car = { ...formDefaults }, customers = []
 
-      // Busca a lista de clientes para preencher o combo de escolha
-      // do cliente que comprou o carro
+      // Busca a lista de clientes
       customers = await myfetch.get('/customers')
 
-      // Se houver parâmetro na rota, precisamos buscar o carro para
-      // ser editado
+      // Se houver parâmetro na rota, precisamos buscar o carro para edição
       if(params.id) {
 
-        car = await myfetch.get(`/cars/${params.id}`)
+        const fetchedCar = await myfetch.get(`/cars/${params.id}`)
 
-        // Converte o formato de data armazenado no banco de dados
-        // para o formato reconhecido pelo componente DatePicker
-        
-        if(car.selling_date) {
-          car.selling_date = parseISO(car.selling_date)
+        // Garante que selling_price seja null ou um número para o formulário
+        fetchedCar.selling_price = fetchedCar.selling_price ?? ''
+
+        // Converte o formato de data do banco (ISO string) para objeto Date
+        if(fetchedCar.selling_date) {
+          fetchedCar.selling_date = parseISO(fetchedCar.selling_date)
         }
+        
+        car = { ...car, ...fetchedCar }
       }
 
       setState({ ...state, car, customers })
@@ -180,11 +351,15 @@ export default function CarForm() {
   function handleKeyDown(event) {
     if(event.key === 'Delete') {
       const stateCopy = {...state}
-      stateCopy.car.customer_id = null
+      // Se pressionar DEL no campo de cliente, seta para null (para o backend) e 
+      // para string vazia (para o select do frontend)
+      stateCopy.car.customer_id = '' 
       setState(stateCopy)
     }
   }
 
+  // Correção: A prop `checked` do Checkbox deve ser `car.imported`
+  // O value deve ser o valor booleano do campo, não a atribuição `(car.imported = imported)`
   return (
     <>
       <ConfirmDialog />
@@ -206,7 +381,7 @@ export default function CarForm() {
             value={car.brand}
             onChange={handleFieldChange}
             helperText={inputErrors?.brand}
-            error={inputErrors?.brand}
+            error={!!inputErrors?.brand}
           />
           <TextField
             name='model'
@@ -217,22 +392,22 @@ export default function CarForm() {
             value={car.model}
             onChange={handleFieldChange}
             helperText={inputErrors?.model}
-            error={inputErrors?.model}
+            error={!!inputErrors?.model}
           />
 
           <TextField
             name='color'
-            label='Color'
+            label='Cor'
             variant='filled'
             required
             fullWidth
             value={car.color}
             onChange={handleFieldChange}
             select
-            helperText={inputErrors?.state}
-            error={inputErrors?.state}
+            helperText={inputErrors?.color}
+            error={!!inputErrors?.color}
           >
-            {colors.map((s) => (
+            {colorsList.map((s) => (
               <MenuItem key={s.value} value={s.value}>
                 {s.label}
               </MenuItem>
@@ -249,7 +424,7 @@ export default function CarForm() {
             value={car.year_manufacture}
             onChange={handleFieldChange}
             helperText={inputErrors?.year_manufacture}
-            error={inputErrors?.year_manufacture}
+            error={!!inputErrors?.year_manufacture}
           >
             {years.map((year) => (
               <MenuItem key={year} value={year}>
@@ -263,10 +438,8 @@ export default function CarForm() {
               control={
                 <Checkbox
                   name='imported'
-                  variant='filled'
-                  value={(car.imported = imported)}
-                  checked={imported}
-                  onChange={handleImportedChange}
+                  checked={car.imported} // << CORRIGIDO: Usa diretamente o valor do objeto car
+                  onChange={handleImportedChange} // << CORRIGIDO: Nova função de manipulador
                   color='primary'
                 />
               }
@@ -288,8 +461,8 @@ export default function CarForm() {
                 variant='filled'
                 required
                 fullWidth
-                helperText={inputErrors?.phone}
-                error={inputErrors?.phone}
+                helperText={inputErrors?.plates || 'Formato: AAA-9A99'}
+                error={!!inputErrors?.plates}
               />
             )}
           </InputMask>
@@ -301,17 +474,13 @@ export default function CarForm() {
             <DatePicker
               label='Data de venda'
               value={car.selling_date}
-              onChange={(value) =>
-                handleFieldChange({
-                  target: { name: 'selling_date', value },
-                })
-              }
+              onChange={handleDateChange} // << CORRIGIDO: Chama a nova função de manipulador
               slotProps={{
                 textField: {
                   variant: 'filled',
                   fullWidth: true,
                   helperText: inputErrors?.selling_date,
-                  error: inputErrors?.selling_date,
+                  error: !!inputErrors?.selling_date,
                 },
               }}
             />
@@ -325,8 +494,8 @@ export default function CarForm() {
             fullWidth
             value={car.selling_price}
             onChange={handleFieldChange}
-            helperText={inputErrors?.selling_price}
-            error={inputErrors?.selling_price}
+            helperText={inputErrors?.selling_price || 'Opcional. Entre R$ 5.000,00 e R$ 5.000.000,00'}
+            error={!!inputErrors?.selling_price}
           />
 
           <TextField
@@ -335,12 +504,12 @@ export default function CarForm() {
             variant='filled'
             required
             fullWidth
-            value={car.customer_id}
+            value={car.customer_id ?? ''} // Usa '' para garantir que o select funcione se for null
             onChange={handleFieldChange}
             onKeyDown={handleKeyDown}
             select
-            helperText={inputErrors?.customer_id || 'Tecle DEL para limpar o cliente'}
-            error={inputErrors?.customer_id}
+            helperText={inputErrors?.customer_id || 'Obrigatório. Tecle DEL para limpar o cliente'}
+            error={!!inputErrors?.customer_id}
           >
             {customers.map((c) => (
               <MenuItem key={c.id} value={c.id}>
@@ -363,10 +532,6 @@ export default function CarForm() {
               Voltar
             </Button>
           </Box>
-
-          {/*<Box sx={{ fontFamily: 'monospace', display: 'flex', width: '100%' }}>
-            {JSON.stringify(car)}
-          </Box>*/}
         </form>
       </Box>
     </>
