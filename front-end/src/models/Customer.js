@@ -107,4 +107,3 @@ const Customer = z.object({
    .email({ message: 'E-mail inválido.' })
 })
 export default Customer
-
