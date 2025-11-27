@@ -10,6 +10,13 @@ controller.create = async function(req, res) {
 
     // Somente usuários administradores podem acessar este recurso
     // HTTP 403: Forbidden(
+
+    /*
+      Vulnerabilidade: API5:2023 Falha de autorização a nível de função
+      Esta vulnerabilidade foi evitada no código pela verificação explícita 
+      da permissão de administrador (req?.authUser?.is_admin) antes de permitir
+      a criação de um novo usuário.
+      */
     if(! req?.authUser?.is_admin) return res.status(403).end()
 
     // Verifica se existe o campo "password" em "req.body".
@@ -180,6 +187,16 @@ controller.login = async function(req, res) {
       // enviada coincide com o hash da senha armazenada no BD
      // Chamando bcrypt.compare() para verificar se o hash da senha
       // enviada coincide com o hash da senha armazenada no BD
+
+
+
+      /*
+        Vulnerabilidade: API2:2023 Falha de autenticação
+        Esta vulnerabilidade foi evitada no código:
+        1. Armazenando o hash da senha (com bcrypt, no método create/update) em vez da senha em texto claro.
+        2. Usando bcrypt.compare() para verificar a senha fornecida com o hash armazenado.
+        3. Removendo a vulnerabilidade de autenticação fixa (credenciais 'admin'/'admin123').
+        */
       const passwordIsValid = await bcrypt.compare(req.body?.password, user.password)
 
       // Se a senha estiver errada, retorna
